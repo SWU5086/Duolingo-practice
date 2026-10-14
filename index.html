@@ -166,7 +166,9 @@ function home(){
       <button class="btn" id="go" style="align-self:flex-end">開始</button>
     </div>
     <div class="stats"><span>題庫 <b>${all.length}</b> ${T.unit}</span><span>做過 <b>${done}</b></span>${T.prod?'':`<span>目前錯題 <b>${wrongNow}</b></span>`}</div>
-    ${['RA','SAP','RTS','LTS'].includes(cur)?`<label class="sub" style="display:flex;gap:6px;align-items:center;margin-top:12px"><input type="checkbox" id="mic" ${store.get('mic',true)?'checked':''}> 錄音＋自動轉錄（第一次會問你要不要允許麥克風）</label><p class="sub" style="margin:4px 0 0">轉錄用的是 Chrome 內建的語音辨識，需要連網；轉出來的文字會放進筆記，方便貼給 Claude 批改。</p>`:''}
+    ${['RA','SAP','RTS','LTS'].includes(cur)?`<label class="sub" style="display:flex;gap:6px;align-items:center;margin-top:12px"><input type="checkbox" id="mic" ${store.get('mic',true)?'checked':''}> 使用麥克風（第一次會問你要不要允許）</label>
+    <label class="f" style="margin-top:8px">麥克風模式<select id="recmode"><option value="both">錄音＋自動轉文字（電腦建議）</option><option value="sr">只轉文字，不錄音（手機建議）</option><option value="rec">只錄音，不轉文字</option></select></label>
+    <p class="sub" style="margin:4px 0 0">Android 手機不能同時錄音又轉文字，手機請選「只轉文字」。</p><p class="sub" style="margin:4px 0 0">轉錄用的是 Chrome 內建的語音辨識，需要連網；轉出來的文字會放進筆記，方便貼給 Claude 批改。</p>`:''}
     ${cur==='IR'?'<p class="sub" style="margin:12px 0 0">一組 6 步，跟考試一樣做完整組才對答案。畫答案的步驟用滑鼠在文章上拖曳選取。</p>':''}
     ${cur==='IL'?'<p class="sub" style="margin:12px 0 0">對方的話用瀏覽器語音念（題本沒有附這部分的音檔），預設不顯示文字，跟考試一樣只聽一次。</p>':''}
     ${cur==='LTS'?'<p class="sub" style="margin:12px 0 0">播放題本 QR code 連到的官方音檔（第 17、35 題沒有，改用瀏覽器語音）。</p>':''}
@@ -176,6 +178,7 @@ function home(){
   </div>`;
   $('#mode').value=(T.prod&&opts.mode==='wrong')?'next':opts.mode; $('#tm').value=store.get('timed_'+cur,'1');
   if($('#mic')) $('#mic').onchange=e=>store.set('mic',e.target.checked);
+  if($('#recmode')){ $('#recmode').value=recMode(); $('#recmode').onchange=e=>store.set('recmode',e.target.value); }
   $('#go').onclick=()=>{
     const mode=$('#mode').value, size=Math.max(1,Math.min(all.length,+$('#size').value||T.def));
     store.set('opt_'+cur,{mode,size}); store.set('timed_'+cur,$('#tm').value);
@@ -297,11 +300,15 @@ function wc(s){return toks(s).length}
 const NAMES={RS:'Read and Select',FB:'Fill in the Blanks',RC:'Read and Complete',LT:'Listen and Type',IR:'Interactive Reading',IL:'Interactive Listening',RA:'Read Aloud',WAP:'Write About the Photo',SAP:'Speak About the Photo',IW:'Interactive Writing',RTS:'Read Then Speak',LTS:'Listen Then Speak'};
 
 /* recording + live transcript */
+const IS_ANDROID=/Android/i.test(navigator.userAgent);
+function recMode(){return store.get('recmode',IS_ANDROID?'sr':'both')}
 function srMsg(c){return ({'not-allowed':'瀏覽器不允許語音辨識。最常見的原因是網頁用「檔案」直接打開（網址是 file:///），Chrome 會擋；或是麥克風權限被拒。','service-not-allowed':'瀏覽器不允許語音辨識服務（用檔案直接打開時 Chrome 常會擋）。','network':'連不到 Google 的語音辨識伺服器，請確認有連網。','audio-capture':'語音辨識抓不到麥克風（可能被別的程式占用）。','language-not-supported':'這個瀏覽器不支援英文辨識。','unsupported':'這個瀏覽器沒有語音辨識功能（請用 Chrome）。','start-failed':'語音辨識無法啟動。'})[c]||('錯誤代碼 '+c)}
 
 async function startRec(){
   const r={chunks:[],text:'',interim:''};
   if(!store.get('mic',true)) return Object.assign(r,{stop:()=>Promise.resolve(r)});
+  const mode=recMode();
+  if(mode!=='sr'){
   try{ r.stream=await navigator.mediaDevices.getUserMedia({audio:true}); r.mr=new MediaRecorder(r.stream); r.mr.ondataavailable=e=>{if(e.data.size)r.chunks.push(e.data)}; r.mr.start(); }
   catch(e){
     const nm=(e&&e.name)||'', where=location.protocol+(window.isSecureContext?'・安全':'・非安全')+(window.self!==window.top?'・內嵌':'');
@@ -312,16 +319,18 @@ async function startRec(){
     else if(nm==='NotReadableError') why='麥克風被別的程式占用。';
     else why='麥克風無法啟動。';
     r.err=`沒有錄音：${why}（代碼：${nm||'無 mediaDevices'}｜${where}）可以改用下面的文字框＋鍵盤語音輸入。`;
-  }
+  } }
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(SR && !r.err){ try{
-    const s=new SR(); s.lang='en-US'; s.continuous=true; s.interimResults=true;
-    s.onresult=e=>{let fin='',im='';for(let k=0;k<e.results.length;k++){const x=e.results[k];if(x.isFinal)fin+=x[0].transcript+' ';else im+=x[0].transcript} r.text=(r.base||'')+fin; r.interim=im; const el=$('#live'); if(el) el.textContent=(r.text+im).trim()||'…'};
+  if(mode!=='rec' && SR && !r.err){ try{
+    const s=new SR(); s.lang='en-US'; s.interimResults=true;
+    s.continuous=!IS_ANDROID;   // Android：一段一段辨識，結束就接著下一段，比較穩
+    s.onresult=e=>{let fin='',im='';for(let k=e.resultIndex;k<e.results.length;k++){const x=e.results[k];if(x.isFinal)fin+=x[0].transcript+' ';else im+=x[0].transcript}
+      if(fin) r.text=(r.text+' '+fin).replace(/\s+/g,' ').trim(); r.interim=im; const el=$('#live'); if(el) el.textContent=(r.text+' '+im).trim()||'…'};
     s.onerror=e=>{ if(e.error==='no-speech'||e.error==='aborted') return; r.srErr=e.error; r.srDead=true; const el=$('#live'); if(el) el.textContent='轉錄失敗：'+srMsg(e.error); };
-    s.onend=()=>{ if(!r.stopped&&!r.srDead){ r.base=r.text; try{s.start()}catch(e){} } };
+    s.onend=()=>{ r.interim=''; if(!r.stopped&&!r.srDead){ try{s.start()}catch(e){} } };
     s.start(); r.sr=s;
   }catch(e){ r.srErr='start-failed' } }
-  else if(!SR && !r.err) r.srErr='unsupported';
+  else if(mode!=='rec' && !SR && !r.err) r.srErr='unsupported';
   r.stop=()=>new Promise(res=>{
     r.stopped=true; try{r.sr&&r.sr.stop()}catch(e){}
     const fin=()=>setTimeout(()=>{r.final=(r.text+' '+(r.interim||'')).replace(/\s+/g,' ').trim();res(r)},400);
@@ -345,7 +354,7 @@ function speakFlow({i,n,timed,top,prep=20,speak=90,onPrepStart,onDone}){
   const draw=(extra)=>{ $('#view').innerHTML=`<div class="card">${head(i,n)}${top()}<div id="ctl" style="margin-top:14px">${extra}</div></div>`; noBar(timed); };
   const goSpeak=async()=>{ if(phase!=='prep')return; phase='speak'; stopTimer(); onPrepStart&&onPrepStart.stop&&onPrepStart.stop();
     draw(`<p><b class="badc">● 錄音中</b>　說滿 ${speak} 秒最好（DET 建議至少說到 30 秒）</p><p class="sub" style="margin:0">即時轉錄：</p><p id="live" class="sub">${(window.SpeechRecognition||window.webkitSpeechRecognition)&&store.get('mic',true)?'…':'（這個瀏覽器不支援轉錄）'}</p><p class="sub" style="margin:10px 0 4px">也可以在這裡打字或用鍵盤 🎤 語音輸入（計時照跑）：</p><textarea id="tx0" spellcheck="false" placeholder="手機：點這裡再按鍵盤上的麥克風，邊說邊轉成文字"></textarea><div class="row" style="margin-top:10px"><button class="btn" id="end">說完了</button></div>`);
-    rec=await startRec(); if(rec.err){ $('#live').textContent=rec.err; const b=$('#ctl b.badc'); if(b) b.textContent='⏱ 計時中（沒有錄音）'; }
+    rec=await startRec(); if(rec.err){ $('#live').textContent=rec.err; const b=$('#ctl b.badc'); if(b) b.textContent='⏱ 計時中（沒有錄音）'; } else if(recMode()==='sr'){ const b=$('#ctl b.badc'); if(b) b.textContent='● 聆聽中（只轉文字）'; }
     $('#end').onclick=finishSpeak;
     if(timed) countdown(speak,tick(speak),finishSpeak);
   };
@@ -450,7 +459,7 @@ QUIZ.RA=function(id,i,n,timed,done){
   const s=DATA.PR.RA[id]; let rec=null, over=false;
   $('#view').innerHTML=`<div class="card">${head(i,n)}<div class="sent" style="font-size:1.4rem">${esc(s)}</div><div id="ctl"><p class="sub">按「開始」後在 20 秒內唸出這句話。</p><button class="btn" id="go">開始</button></div></div>`;
   noBar(timed); $('#bar').classList.add('hide');
-  $('#go').onclick=async()=>{ $('#ctl').innerHTML=`<p><b class="badc">● 錄音中</b></p><p id="live" class="sub">…</p><p class="sub" style="margin:10px 0 4px">也可以在這裡打字或用鍵盤 🎤 語音輸入（計時照跑）：</p><textarea id="tx0" spellcheck="false" placeholder="手機：點這裡再按鍵盤上的麥克風，邊說邊轉成文字"></textarea><div class="row" style="margin-top:10px"><button class="btn" id="end">唸完了</button></div>`; rec=await startRec(); if(rec.err){$('#live').textContent=rec.err; const b=$('#ctl b.badc'); if(b) b.textContent='⏱ 計時中（沒有錄音）';} $('#end').onclick=fin; if(timed){$('#bar').classList.remove('hide');countdown(20,tick(20),fin)} };
+  $('#go').onclick=async()=>{ $('#ctl').innerHTML=`<p><b class="badc">● 錄音中</b></p><p id="live" class="sub">…</p><p class="sub" style="margin:10px 0 4px">也可以在這裡打字或用鍵盤 🎤 語音輸入（計時照跑）：</p><textarea id="tx0" spellcheck="false" placeholder="手機：點這裡再按鍵盤上的麥克風，邊說邊轉成文字"></textarea><div class="row" style="margin-top:10px"><button class="btn" id="end">唸完了</button></div>`; rec=await startRec(); if(rec.err){$('#live').textContent=rec.err; const b=$('#ctl b.badc'); if(b) b.textContent='⏱ 計時中（沒有錄音）';} else if(recMode()==='sr'){ const b=$('#ctl b.badc'); if(b) b.textContent='● 聆聽中（只轉文字）'; } $('#end').onclick=fin; if(timed){$('#bar').classList.remove('hide');countdown(20,tick(20),fin)} };
   const fin=async()=>{ if(over)return; over=true; stopTimer(); const typed=$('#tx0')?$('#tx0').value.trim():''; const r=await (rec?rec.stop():Promise.resolve({})); if(typed) r.final=typed;
     let cmp=''; let ok=null;
     if(r.final){ const d=wordDiff(normWords(s),normWords(r.final)); ok=d.ok; cmp=`<p class="sub">轉錄文字跟原句比對（紅色＝沒被辨識到的字，常常是發音不清楚）：</p><p class="diff">${d.html}</p>`; }
